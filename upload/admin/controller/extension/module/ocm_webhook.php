@@ -6,6 +6,7 @@ class ControllerExtensionModuleOcmWebhook extends Controller
     private const ROUTE = 'extension/module/ocm_webhook';
     private const EVENT_PREFIX = 'ocm_webhook_';
     private const DEFAULT_SORT_ORDER = 1000;
+    private const LOG_STATUS_KEY = 'module_ocm_webhook_log_status';
     private const AUTH_NONE = 'none';
     private const AUTH_QUERY = 'query';
     private const AUTH_BEARER = 'bearer';
@@ -20,6 +21,7 @@ class ControllerExtensionModuleOcmWebhook extends Controller
 
     public function index()
     {
+        $this->loadLogger();
         $this->load->language(self::ROUTE);
         $this->document->setTitle($this->language->get('heading_title'));
         $this->load->model('setting/setting');
@@ -27,9 +29,17 @@ class ControllerExtensionModuleOcmWebhook extends Controller
 
         if (($this->request->server['REQUEST_METHOD'] === 'POST') && $this->validate()) {
             $settings = $this->normalizeSettings($this->request->post);
+            $this->writeLog('Saving module settings', array(
+                'status' => isset($settings[self::CODE . '_status']) ? (int)$settings[self::CODE . '_status'] : 0,
+                'log_status' => isset($settings[self::LOG_STATUS_KEY]) ? (int)$settings[self::LOG_STATUS_KEY] : 0,
+                'rules_count' => isset($settings[self::CODE . '_rules']) ? count($settings[self::CODE . '_rules']) : 0
+            ));
 
             $this->model_setting_setting->editSetting(self::CODE, $settings);
             $this->syncEvents($settings);
+            $this->writeLog('Module settings saved', array(
+                'rules_count' => isset($settings[self::CODE . '_rules']) ? count($settings[self::CODE . '_rules']) : 0
+            ));
 
             $this->session->data['success'] = $this->language->get('text_success');
             $this->response->redirect($this->url->link(self::ROUTE, 'user_token=' . $this->session->data['user_token'], true));
@@ -45,6 +55,7 @@ class ControllerExtensionModuleOcmWebhook extends Controller
         $data['button_add_rule'] = $this->language->get('button_add_rule');
         $data['button_remove'] = $this->language->get('button_remove');
         $data['entry_status'] = $this->language->get('entry_status');
+        $data['entry_log_status'] = $this->language->get('entry_log_status');
         $data['entry_rules'] = $this->language->get('entry_rules');
         $data['entry_event'] = $this->language->get('entry_event');
         $data['entry_url'] = $this->language->get('entry_url');
@@ -92,6 +103,7 @@ class ControllerExtensionModuleOcmWebhook extends Controller
 
         $settings = $this->model_setting_setting->getSetting(self::CODE);
         $data[self::CODE . '_status'] = $this->getSettingValue($settings, self::CODE . '_status', 0);
+        $data[self::LOG_STATUS_KEY] = $this->getSettingValue($settings, self::LOG_STATUS_KEY, 1);
         $data[self::CODE . '_rules'] = $this->prepareRulesForForm($settings);
 
         $data['header'] = $this->load->controller('common/header');
@@ -103,29 +115,40 @@ class ControllerExtensionModuleOcmWebhook extends Controller
 
     public function install()
     {
+        $this->loadLogger();
         $this->load->model('setting/setting');
         $this->load->model('setting/event');
 
         $settings = array(
             self::CODE . '_status' => 1,
+            self::LOG_STATUS_KEY => 1,
             self::CODE . '_rules' => array()
         );
 
         $this->model_setting_setting->editSetting(self::CODE, $settings);
         $this->syncEvents($settings);
+        $this->writeLog('Module installed', array(
+            'status' => 1
+        ));
     }
 
     public function uninstall()
     {
+        $this->loadLogger();
         $this->load->model('setting/setting');
         $this->db->query("DELETE FROM `" . DB_PREFIX . "event` WHERE `code` LIKE '" . $this->db->escape(self::EVENT_PREFIX) . "%'");
         $this->model_setting_setting->deleteSetting(self::CODE);
+        $this->writeLog('Module uninstalled');
     }
 
     protected function validate()
     {
         if (!$this->user->hasPermission('modify', self::ROUTE)) {
             $this->error['warning'] = $this->language->get('error_permission');
+            $this->loadLogger();
+            $this->writeLog('Permission denied while saving module settings', array(
+                'user_id' => isset($this->session->data['user_id']) ? $this->session->data['user_id'] : null
+            ), 'error');
         }
 
         return !$this->error;
@@ -134,6 +157,7 @@ class ControllerExtensionModuleOcmWebhook extends Controller
     private function normalizeSettings(array $post)
     {
         $post[self::CODE . '_status'] = isset($post[self::CODE . '_status']) ? (int)$post[self::CODE . '_status'] : 0;
+        $post[self::LOG_STATUS_KEY] = isset($post[self::LOG_STATUS_KEY]) ? (int)$post[self::LOG_STATUS_KEY] : 0;
         $post[self::CODE . '_rules'] = $this->normalizeRules(isset($post[self::CODE . '_rules']) ? $post[self::CODE . '_rules'] : array());
 
         return $post;
@@ -285,9 +309,12 @@ class ControllerExtensionModuleOcmWebhook extends Controller
 
     private function syncEvents(array $settings)
     {
+        $this->loadLogger();
         $this->db->query("DELETE FROM `" . DB_PREFIX . "event` WHERE `code` LIKE '" . $this->db->escape(self::EVENT_PREFIX) . "%'");
+        $this->writeLog('Existing webhook events cleared');
 
         if (empty($settings[self::CODE . '_status'])) {
+            $this->writeLog('Event sync skipped because module is disabled');
             return;
         }
 
@@ -301,6 +328,11 @@ class ControllerExtensionModuleOcmWebhook extends Controller
             $status = isset($rule['status']) ? (int)$rule['status'] : 1;
 
             if ($event === '' || $url === '') {
+                $this->writeLog('Rule skipped during sync because event or URL is empty', array(
+                    'code' => $code,
+                    'event' => $event,
+                    'url' => $url
+                ), 'warning');
                 continue;
             }
 
@@ -311,6 +343,13 @@ class ControllerExtensionModuleOcmWebhook extends Controller
             $action = $this->getActionRouteByEvent($event);
 
             $this->model_setting_event->addEvent($code, $event, $action, $status, $sort_order);
+            $this->writeLog('Webhook event registered', array(
+                'code' => $code,
+                'event' => $event,
+                'action' => $action,
+                'status' => $status,
+                'sort_order' => $sort_order
+            ));
         }
     }
 
@@ -373,5 +412,31 @@ class ControllerExtensionModuleOcmWebhook extends Controller
         }
 
         return $value;
+    }
+
+    private function loadLogger()
+    {
+        if (!class_exists('OcmWebhook\\Logger')) {
+            require_once DIR_SYSTEM . 'library/ocm_webhook/logger.php';
+        }
+    }
+
+    private function writeLog($message, array $context = array(), $level = 'info')
+    {
+        $this->loadLogger();
+
+        $logger = new \OcmWebhook\Logger($this->registry);
+
+        if ($level === 'warning') {
+            $logger->warning($message, $context);
+            return;
+        }
+
+        if ($level === 'error') {
+            $logger->error($message, $context);
+            return;
+        }
+
+        $logger->info($message, $context);
     }
 }

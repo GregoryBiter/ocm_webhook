@@ -5,20 +5,17 @@ namespace OcmWebhook;
 class Dispatcher
 {
     private $registry;
-    private $log;
+    private $logger;
     private $settings;
     private static $queue = array();
     private static $shutdownRegistered = false;
+    private static $runtimeRegistry = null;
 
     public function __construct($registry)
     {
         $this->registry = $registry;
-
-        if (!class_exists('Log')) {
-            require_once DIR_SYSTEM . 'library/log.php';
-        }
-
-        $this->log = new \Log('ocm_webhook.log');
+        self::$runtimeRegistry = $registry;
+        $this->logger = new Logger($registry);
     }
 
     public function dispatchBefore($route, $data)
@@ -61,7 +58,10 @@ class Dispatcher
             }
 
             if (!filter_var($url, FILTER_VALIDATE_URL)) {
-                $this->writeLog('Skipped invalid webhook URL: ' . $url);
+                $this->writeLog('Skipped invalid webhook URL', array(
+                    'event' => $event,
+                    'url' => $url
+                ));
                 continue;
             }
 
@@ -111,18 +111,32 @@ class Dispatcher
                 }
 
                 $matched = true;
-                self::$queue[] = array(
+                $payload = $this->buildPayload($rule['event'], $stage, $route, $data, $output, $rule);
+                $queueItem = array(
                     'url' => $rule['url'],
-                    'payload' => $this->buildPayload($rule['event'], $stage, $route, $data, $output, $rule),
+                    'payload' => $payload,
                     'auth' => $this->buildAuthConfig($rule)
                 );
+                self::$queue[] = $queueItem;
+
+                $this->writeLog('Queued webhook event', array(
+                    'event' => $rule['event'],
+                    'route' => $route,
+                    'stage' => $stage,
+                    'url' => $rule['url'],
+                    'queue_size' => count(self::$queue)
+                ));
             }
 
             if ($matched) {
                 $this->registerShutdown();
             }
         } catch (\Throwable $e) {
-            $this->writeLog('Dispatcher error: ' . $e->getMessage());
+            $this->writeLog('Dispatcher error', array(
+                'message' => $e->getMessage(),
+                'route' => $route,
+                'stage' => $stage
+            ), 'error');
         }
     }
 
@@ -281,6 +295,10 @@ class Dispatcher
             return;
         }
 
+        self::writeStaticLog('Flushing webhook queue', array(
+            'items' => count(self::$queue)
+        ));
+
         if (function_exists('fastcgi_finish_request')) {
             @fastcgi_finish_request();
         }
@@ -298,7 +316,10 @@ class Dispatcher
                     isset($item['auth']) ? $item['auth'] : array()
                 );
             } catch (\Throwable $e) {
-                self::writeStaticLog('Webhook send error: ' . $e->getMessage());
+                self::writeStaticLog('Webhook send error', array(
+                    'message' => $e->getMessage(),
+                    'url' => isset($item['url']) ? $item['url'] : ''
+                ), 'error');
             }
         }
     }
@@ -309,7 +330,10 @@ class Dispatcher
         $body = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
         if ($body === false) {
-            self::writeStaticLog('Failed to encode webhook payload');
+            self::writeStaticLog('Failed to encode webhook payload', array(
+                'url' => $url,
+                'event' => isset($payload['event']) ? $payload['event'] : ''
+            ), 'error');
             return false;
         }
 
@@ -355,10 +379,20 @@ class Dispatcher
             curl_close($ch);
 
             if ($response === false || $errno || $http_code >= 400) {
-                self::writeStaticLog('Webhook request failed for ' . $url . ' | HTTP ' . (int)$http_code . ' | ' . ($error ?: 'no curl error'));
+                self::writeStaticLog('Webhook request failed', array(
+                    'url' => $url,
+                    'event' => isset($payload['event']) ? $payload['event'] : '',
+                    'http_code' => (int)$http_code,
+                    'error' => $error ?: 'no curl error'
+                ), 'error');
                 return false;
             }
 
+            self::writeStaticLog('Webhook request completed', array(
+                'url' => $url,
+                'event' => isset($payload['event']) ? $payload['event'] : '',
+                'http_code' => (int)$http_code
+            ));
             return true;
         }
 
@@ -374,10 +408,17 @@ class Dispatcher
 
         $result = @file_get_contents($url, false, $context);
         if ($result === false) {
-            self::writeStaticLog('Webhook request failed for ' . $url . ' using stream fallback');
+            self::writeStaticLog('Webhook request failed using stream fallback', array(
+                'url' => $url,
+                'event' => isset($payload['event']) ? $payload['event'] : ''
+            ), 'error');
             return false;
         }
 
+        self::writeStaticLog('Webhook request completed using stream fallback', array(
+            'url' => $url,
+            'event' => isset($payload['event']) ? $payload['event'] : ''
+        ));
         return true;
     }
 
@@ -439,18 +480,33 @@ class Dispatcher
         return $scheme . $user_info . $host . $port . $path . $query_string . $fragment;
     }
 
-    private function writeLog($message)
+    private function writeLog($message, array $context = array(), $level = 'info')
     {
-        $this->log->write($message);
-    }
-
-    private static function writeStaticLog($message)
-    {
-        if (!class_exists('Log')) {
-            require_once DIR_SYSTEM . 'library/log.php';
+        if ($level === 'warning') {
+            $this->logger->warning($message, $context);
+            return;
         }
 
-        $log = new \Log('ocm_webhook.log');
-        $log->write($message);
+        if ($level === 'error') {
+            $this->logger->error($message, $context);
+            return;
+        }
+
+        $this->logger->info($message, $context);
+    }
+
+    private static function writeStaticLog($message, array $context = array(), $level = 'info')
+    {
+        if ($level === 'warning') {
+            Logger::warningStatic($message, $context, self::$runtimeRegistry);
+            return;
+        }
+
+        if ($level === 'error') {
+            Logger::errorStatic($message, $context, self::$runtimeRegistry);
+            return;
+        }
+
+        Logger::infoStatic($message, $context, self::$runtimeRegistry);
     }
 }

@@ -1,0 +1,11 @@
+{
+    "files": [
+        "admin/controller/event/ocm_webhook.php",
+        "admin/controller/extension/module/ocm_webhook.php",
+        "admin/language/en-gb/extension/module/ocm_webhook.php",
+        "admin/language/uk-ua/extension/module/ocm_webhook.php",
+        "admin/view/template/extension/module/ocm_webhook.twig",
+        "catalog/controller/event/ocm_webhook.php",
+        "system/library/ocm_webhook/dispatcher.php"
+    ]
+}

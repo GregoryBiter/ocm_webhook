@@ -10,6 +10,7 @@ $_['text_enabled'] = 'Enabled';
 $_['text_disabled'] = 'Disabled';
 
 $_['entry_status'] = 'Module Status';
+$_['entry_log_status'] = 'Normal Logging';
 $_['entry_rules'] = 'Webhook Rules';
 $_['entry_event'] = 'OpenCart Event';
 $_['entry_url'] = 'Webhook URL';
@@ -27,6 +28,7 @@ $_['help_sort_order'] = 'Higher values run later. If you need the latest updated
 $_['help_auth'] = 'Optional. Leave this disabled if the target webhook does not require authorization.';
 $_['help_auth_token'] = 'Used by Query Token, Bearer Token, Header Token, and HMAC Signature modes. You can generate a shared secret automatically.';
 $_['help_auth_basic'] = 'Used only for Basic Auth. The username and password are sent in the Authorization header.';
+$_['help_log_status'] = 'Turn this off to stop informational and warning logs. Error logs are always written.';
 $_['button_generate_token'] = 'Generate Token';
 $_['text_auth_none'] = 'No auth';
 $_['text_auth_query'] = 'Query token';
